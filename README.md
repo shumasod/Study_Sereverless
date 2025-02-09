@@ -47,7 +47,7 @@
 
 3. **FaaS（Function as a Service）**
    - 個々の機能（関数）単位でサービスを提供
-   - 例：AWS Lambda、Azure Functions
+   - 例：AWS Lambda、Azure Functions.StepFunction,Logic APPs
    - ユースケース：イベント処理、バッチ処理
 
 ##### クラウドデプロイメントモデル
