@@ -1,6 +1,6 @@
-// GameManager.cs
 using System.Collections;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 public class GameManager : MonoBehaviour
 {
@@ -11,6 +11,7 @@ public class GameManager : MonoBehaviour
     [SerializeField] private TennisBall ballPrefab;
     [SerializeField] private Transform[] servePositions;
     [SerializeField] private Transform courtCenter;
+    [SerializeField] private GameObject netObject;
 
     [Header("Players")]
     [SerializeField] private PlayerController playerController;
@@ -19,6 +20,7 @@ public class GameManager : MonoBehaviour
     [Header("Game Settings")]
     [SerializeField] private float serveDelay = 3f;
     [SerializeField] private float pointDelay = 2f;
+    [SerializeField] private TennisBall.CourtType courtType = TennisBall.CourtType.Hard;
     
     // 現在のボール
     private TennisBall currentBall;
@@ -36,6 +38,10 @@ public class GameManager : MonoBehaviour
     private MatchManager matchManager;
     private CameraManager cameraManager;
     private UIManager uiManager;
+    
+    // イベント
+    public delegate void GameStateChangedHandler(GameState newState);
+    public event GameStateChangedHandler OnGameStateChanged;
 
     private void Awake()
     {
@@ -50,22 +56,52 @@ public class GameManager : MonoBehaviour
         
         // 関連マネージャーの取得
         matchManager = GetComponent<MatchManager>();
-        cameraManager = FindObjectOfType<CameraManager>();
-        uiManager = FindObjectOfType<UIManager>();
+        
+        // Nullチェックと警告
+        if (matchManager == null)
+        {
+            Debug.LogError("MatchManager component not found on GameManager object!");
+            matchManager = gameObject.AddComponent<MatchManager>();
+        }
     }
-
+    
     private void Start()
     {
+        // カメラマネージャーとUIマネージャーの参照を取得
+        cameraManager = FindObjectOfType<CameraManager>();
+        uiManager = FindObjectOfType<UIManager>();
+        
+        // Nullチェック
+        if (cameraManager == null)
+            Debug.LogWarning("CameraManager not found in scene!");
+            
+        if (uiManager == null)
+            Debug.LogWarning("UIManager not found in scene!");
+        
+        // コンポーネント参照のNullチェック
+        if (ballPrefab == null)
+            Debug.LogError("Ball prefab not assigned to GameManager!");
+            
+        if (servePositions == null || servePositions.Length < 2)
+            Debug.LogError("Serve positions not properly assigned to GameManager!");
+            
+        if (playerController == null)
+            Debug.LogError("PlayerController not assigned to GameManager!");
+            
+        if (aiController == null)
+            Debug.LogError("TennisAI not assigned to GameManager!");
+        
         // ゲーム開始時はメインメニューから
         ChangeState(GameState.MainMenu);
     }
     
     // メインメニューからマッチ開始
-    public void StartNewMatch(bool playerServesFirst = true)
+    public void StartNewMatch(bool playerServesFirst = true, TennisBall.CourtType selectedCourtType = TennisBall.CourtType.Hard)
     {
         isPlayerServing = playerServesFirst;
         servingSide = 0;
         currentSet = 0;
+        courtType = selectedCourtType;
         
         // マッチ情報をリセット
         matchManager.ResetMatch();
@@ -81,21 +117,32 @@ public class GameManager : MonoBehaviour
         switch (currentState)
         {
             case GameState.MainMenu:
-                uiManager.HideMainMenu();
+                if (uiManager != null) uiManager.HideMainMenu();
                 break;
+                
             case GameState.Rally:
                 // ラリー終了時の処理
+                break;
+                
+            case GameState.Serving:
+                // 実行中のコルーチンを停止
+                StopAllCoroutines();
                 break;
         }
         
         // 新しい状態を設定
+        GameState previousState = currentState;
         currentState = newState;
+        
+        // デバッグログ
+        Debug.Log($"Game state changed from {previousState} to {currentState}");
         
         // 新しい状態の開始処理
         switch (currentState)
         {
             case GameState.MainMenu:
-                uiManager.ShowMainMenu();
+                if (uiManager != null) uiManager.ShowMainMenu();
+                if (cameraManager != null) cameraManager.SwitchCameraMode(CameraManager.CameraMode.MenuView);
                 break;
                 
             case GameState.SetupMatch:
@@ -111,9 +158,9 @@ public class GameManager : MonoBehaviour
                 
             case GameState.Rally:
                 // ラリー中はAIをアクティブに
-                aiController.SetActive(true);
+                if (aiController != null) aiController.SetActive(true);
                 // カメラを試合用に設定
-                cameraManager.SwitchCameraMode(CameraManager.CameraMode.FollowBall);
+                if (cameraManager != null) cameraManager.SwitchCameraMode(CameraManager.CameraMode.FollowBall);
                 break;
                 
             case GameState.PointScored:
@@ -128,38 +175,70 @@ public class GameManager : MonoBehaviour
                 EndMatch();
                 break;
         }
+        
+        // イベント発火
+        OnGameStateChanged?.Invoke(currentState);
     }
     
     // 試合環境の準備
     private void PrepareMatchEnvironment()
     {
         // プレイヤーの初期位置を設定
-        playerController.transform.position = servePositions[isPlayerServing ? 0 : 1].position;
-        aiController.transform.position = servePositions[isPlayerServing ? 1 : 0].position;
+        if (playerController != null && servePositions != null && servePositions.Length > 0)
+        {
+            playerController.transform.position = servePositions[isPlayerServing ? 0 : 1].position;
+        }
+        
+        if (aiController != null && servePositions != null && servePositions.Length > 1)
+        {
+            aiController.transform.position = servePositions[isPlayerServing ? 1 : 0].position;
+        }
         
         // UIの準備
-        uiManager.UpdateScoreDisplay(matchManager.GetCurrentScore());
-        uiManager.ShowGameUI();
+        if (uiManager != null)
+        {
+            uiManager.UpdateScoreDisplay(matchManager.GetCurrentScore());
+            uiManager.ShowGameUI();
+        }
         
         // カメラをセットアップ
-        cameraManager.SetTargets(playerController.transform, aiController.transform, courtCenter);
+        if (cameraManager != null && playerController != null && aiController != null && courtCenter != null)
+        {
+            cameraManager.SetTargets(playerController.transform, aiController.transform, courtCenter);
+        }
     }
     
     // サーブの準備
     private void PrepareForServe()
     {
         // ボールをインスタンス化
-        if (currentBall == null)
+        if (currentBall == null && ballPrefab != null)
         {
             currentBall = Instantiate(ballPrefab, Vector3.zero, Quaternion.identity);
+            currentBall.SetCourtType(courtType);
+        }
+        else if (currentBall != null)
+        {
+            currentBall.Reset();
+            currentBall.SetCourtType(courtType);
         }
         else
         {
-            currentBall.Reset();
+            Debug.LogError("Cannot prepare serve: Ball prefab is null!");
+            return;
         }
         
         // サーブを行うプレイヤーを特定
-        Transform servePosition = servePositions[servingSide];
+        Transform servePosition = null;
+        if (servePositions != null && servePositions.Length > servingSide)
+        {
+            servePosition = servePositions[servingSide];
+        }
+        else
+        {
+            Debug.LogError("Cannot prepare serve: Invalid serve position index!");
+            return;
+        }
         
         // サーブ位置にボールを配置
         currentBall.transform.position = new Vector3(
@@ -169,43 +248,80 @@ public class GameManager : MonoBehaviour
         );
         
         // サーブカメラに切り替え
-        cameraManager.SwitchCameraMode(CameraManager.CameraMode.ServeCam);
+        if (cameraManager != null)
+        {
+            cameraManager.SwitchCameraMode(CameraManager.CameraMode.ServeCam);
+            cameraManager.SetupServeCam(isPlayerServing ? playerController.transform : aiController.transform);
+        }
         
         // プレイヤーがサーブする場合
-        if (isPlayerServing)
+        if (isPlayerServing && playerController != null)
         {
             playerController.PrepareForServe(currentBall);
             StartCoroutine(WaitForPlayerServe());
         }
-        else
+        else if (!isPlayerServing && aiController != null)
         {
             // AIがサーブする場合
             aiController.PrepareForServe(currentBall);
             StartCoroutine(AIServeRoutine());
         }
+        else
+        {
+            Debug.LogError("Cannot prepare serve: Player or AI controller is null!");
+            return;
+        }
         
         // UIにサーブ情報を表示
-        uiManager.ShowServeInfo(isPlayerServing, servingSide, matchManager.GetCurrentScore());
+        if (uiManager != null)
+        {
+            uiManager.ShowServeInfo(isPlayerServing, servingSide, matchManager.GetCurrentScore());
+        }
     }
     
     // プレイヤーのサーブを待つ
     private IEnumerator WaitForPlayerServe()
     {
+        if (playerController == null)
+        {
+            Debug.LogError("Cannot wait for player serve: PlayerController is null!");
+            yield break;
+        }
+        
         playerController.EnableServeControl(true);
         
         // プレイヤーがサーブするまで待機
-        while (!playerController.HasServed())
+        float timeoutCounter = 0f;
+        float serveTimeout = 15f; // 15秒のタイムアウト
+        
+        while (!playerController.HasServed() && timeoutCounter < serveTimeout)
         {
+            timeoutCounter += Time.deltaTime;
             yield return null;
         }
         
         playerController.EnableServeControl(false);
+        
+        // タイムアウトした場合、強制的にサーブ
+        if (timeoutCounter >= serveTimeout)
+        {
+            Debug.LogWarning("Player serve timed out. Forcing serve.");
+            playerController.OnServe();
+            yield return new WaitForSeconds(1f);
+        }
+        
         StartRally();
     }
     
     // AIのサーブルーティン
     private IEnumerator AIServeRoutine()
     {
+        if (aiController == null)
+        {
+            Debug.LogError("Cannot execute AI serve: TennisAI is null!");
+            yield break;
+        }
+        
         // サーブ前のAIの準備動作
         yield return new WaitForSeconds(serveDelay);
         
@@ -226,8 +342,8 @@ public class GameManager : MonoBehaviour
     {
         if (currentState != GameState.Rally) return;
         
-        // 誰がポイントを獲得したか判定
-        bool playerScored = !isPlayerServing; // サーブ側がミスした場合、相手がポイントを獲得
+        // 誰がポイントを獲得したか判定（現在の実装では最後にボールを打った人が負け）
+        bool playerScored = !CheckLastHitByPlayer();
         
         // デバッグ用
         Debug.Log("Ball out of bounds. Player scored: " + playerScored);
@@ -245,311 +361,35 @@ public class GameManager : MonoBehaviour
         if (currentState == GameState.Serving)
         {
             // レット処理
+            Debug.Log("Let detected. Serve again.");
             PrepareForServe();
         }
         else
         {
             // ポイント獲得判定
             bool playerScored = !CheckLastHitByPlayer();
+            Debug.Log("Net hit during rally. Player scored: " + playerScored);
             ChangeState(GameState.PointScored);
         }
     }
     
-    // 最後にボールを打ったのがプレイヤーかどうか
-    private bool CheckLastHitByPlayer()
-    {
-        // この実装はボールに最後にヒットした情報を保持する必要がある
-        return currentBall.LastHitByPlayer;
-    }
-    
-    // ポイント獲得処理
-    private void ProcessPointScored()
-    {
-        // スコア更新
-        bool playerScored = !CheckLastHitByPlayer();
-        matchManager.UpdateScore(playerScored);
-        
-        // UIスコア表示の更新
-        uiManager.UpdateScoreDisplay(matchManager.GetCurrentScore());
-        
-        // サービング情報の更新
-        UpdateServeInfo();
-        
-        // 試合が終了したかチェック
-        if (matchManager.IsMatchComplete())
-        {
-            ChangeState(GameState.GameOver);
-        }
-    }
-    
-    // サーブ情報の更新
-    private void UpdateServeInfo()
-    {
-        // ポイント終了後のサーブ交代ルール
-        if (matchManager.
-
-        // GameManager.cs
-using System.Collections;
-using UnityEngine;
-
-public class GameManager : MonoBehaviour
-{
-    // シングルトンインスタンス
-    public static GameManager Instance { get; private set; }
-
-    [Header("Game References")]
-    [SerializeField] private TennisBall ballPrefab;
-    [SerializeField] private Transform[] servePositions;
-    [SerializeField] private Transform courtCenter;
-
-    [Header("Players")]
-    [SerializeField] private PlayerController playerController;
-    [SerializeField] private TennisAI aiController;
-
-    [Header("Game Settings")]
-    [SerializeField] private float serveDelay = 3f;
-    [SerializeField] private float pointDelay = 2f;
-    
-    // 現在のボール
-    private TennisBall currentBall;
-    
-    // ゲーム状態
-    public enum GameState { MainMenu, SetupMatch, Serving, Rally, PointScored, GameOver }
-    private GameState currentState = GameState.MainMenu;
-    
-    // 試合情報
-    private bool isPlayerServing = true;
-    private int servingSide = 0; // 0=右、1=左
-    private int currentSet = 0;
-    
-    // 関連マネージャー
-    private MatchManager matchManager;
-    private CameraManager cameraManager;
-    private UIManager uiManager;
-
-    private void Awake()
-    {
-        // シングルトンの設定
-        if (Instance != null && Instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
-        Instance = this;
-        DontDestroyOnLoad(gameObject);
-        
-        // 関連マネージャーの取得
-        matchManager = GetComponent<MatchManager>();
-        cameraManager = FindObjectOfType<CameraManager>();
-        uiManager = FindObjectOfType<UIManager>();
-    }
-
-    private void Start()
-    {
-        // ゲーム開始時はメインメニューから
-        ChangeState(GameState.MainMenu);
-    }
-    
-    // メインメニューからマッチ開始
-    public void StartNewMatch(bool playerServesFirst = true)
-    {
-        isPlayerServing = playerServesFirst;
-        servingSide = 0;
-        currentSet = 0;
-        
-        // マッチ情報をリセット
-        matchManager.ResetMatch();
-        
-        // マッチセットアップ状態へ
-        ChangeState(GameState.SetupMatch);
-    }
-    
-    // 状態遷移処理
-    private void ChangeState(GameState newState)
-    {
-        // 古い状態の終了処理
-        switch (currentState)
-        {
-            case GameState.MainMenu:
-                uiManager.HideMainMenu();
-                break;
-            case GameState.Rally:
-                // ラリー終了時の処理
-                break;
-        }
-        
-        // 新しい状態を設定
-        currentState = newState;
-        
-        // 新しい状態の開始処理
-        switch (currentState)
-        {
-            case GameState.MainMenu:
-                uiManager.ShowMainMenu();
-                break;
-                
-            case GameState.SetupMatch:
-                // プレイヤーと環境の準備
-                PrepareMatchEnvironment();
-                // サービング状態へ
-                StartCoroutine(DelayedStateChange(GameState.Serving, 1f));
-                break;
-                
-            case GameState.Serving:
-                PrepareForServe();
-                break;
-                
-            case GameState.Rally:
-                // ラリー中はAIをアクティブに
-                aiController.SetActive(true);
-                // カメラを試合用に設定
-                cameraManager.SwitchCameraMode(CameraManager.CameraMode.FollowBall);
-                break;
-                
-            case GameState.PointScored:
-                // スコア更新
-                ProcessPointScored();
-                // 次のポイントへ
-                StartCoroutine(DelayedStateChange(GameState.Serving, pointDelay));
-                break;
-                
-            case GameState.GameOver:
-                // 試合終了処理
-                EndMatch();
-                break;
-        }
-    }
-    
-    // 試合環境の準備
-    private void PrepareMatchEnvironment()
-    {
-        // プレイヤーの初期位置を設定
-        playerController.transform.position = servePositions[isPlayerServing ? 0 : 1].position;
-        aiController.transform.position = servePositions[isPlayerServing ? 1 : 0].position;
-        
-        // UIの準備
-        uiManager.UpdateScoreDisplay(matchManager.GetCurrentScore());
-        uiManager.ShowGameUI();
-        
-        // カメラをセットアップ
-        cameraManager.SetTargets(playerController.transform, aiController.transform, courtCenter);
-    }
-    
-    // サーブの準備
-    private void PrepareForServe()
-    {
-        // ボールをインスタンス化
-        if (currentBall == null)
-        {
-            currentBall = Instantiate(ballPrefab, Vector3.zero, Quaternion.identity);
-        }
-        else
-        {
-            currentBall.Reset();
-        }
-        
-        // サーブを行うプレイヤーを特定
-        Transform servePosition = servePositions[servingSide];
-        
-        // サーブ位置にボールを配置
-        currentBall.transform.position = new Vector3(
-            servePosition.position.x,
-            servePosition.position.y + 1.5f, // 手の高さを考慮
-            servePosition.position.z
-        );
-        
-        // サーブカメラに切り替え
-        cameraManager.SwitchCameraMode(CameraManager.CameraMode.ServeCam);
-        
-        // プレイヤーがサーブする場合
-        if (isPlayerServing)
-        {
-            playerController.PrepareForServe(currentBall);
-            StartCoroutine(WaitForPlayerServe());
-        }
-        else
-        {
-            // AIがサーブする場合
-            aiController.PrepareForServe(currentBall);
-            StartCoroutine(AIServeRoutine());
-        }
-        
-        // UIにサーブ情報を表示
-        uiManager.ShowServeInfo(isPlayerServing, servingSide, matchManager.GetCurrentScore());
-    }
-    
-    // プレイヤーのサーブを待つ
-    private IEnumerator WaitForPlayerServe()
-    {
-        playerController.EnableServeControl(true);
-        
-        // プレイヤーがサーブするまで待機
-        while (!playerController.HasServed())
-        {
-            yield return null;
-        }
-        
-        playerController.EnableServeControl(false);
-        StartRally();
-    }
-    
-    // AIのサーブルーティン
-    private IEnumerator AIServeRoutine()
-    {
-        // サーブ前のAIの準備動作
-        yield return new WaitForSeconds(serveDelay);
-        
-        // AIにサーブを実行させる
-        aiController.ExecuteServe();
-        
-        StartRally();
-    }
-    
-    // ラリー開始
-    private void StartRally()
-    {
-        ChangeState(GameState.Rally);
-    }
-    
-    // アウト判定処理
-    public void ProcessOutOfBounds(Vector3 bouncePosition)
+    // ボールが止まった場合の処理
+    public void ProcessBallStopped(Vector3 position, bool lastHitByPlayer)
     {
         if (currentState != GameState.Rally) return;
         
-        // 誰がポイントを獲得したか判定
-        bool playerScored = !isPlayerServing; // サーブ側がミスした場合、相手がポイントを獲得
+        // 最後に打った人が負け
+        bool playerScored = !lastHitByPlayer;
         
-        // デバッグ用
-        Debug.Log("Ball out of bounds. Player scored: " + playerScored);
-        
-        // スコア更新のためにポイント終了処理
+        Debug.Log("Ball stopped. Player scored: " + playerScored);
         ChangeState(GameState.PointScored);
-    }
-    
-    // ネット判定処理
-    public void ProcessNetHit()
-    {
-        if (currentState != GameState.Rally && currentState != GameState.Serving) return;
-        
-        // サーブでのネットタッチはレット（やり直し）、ラリー中はポイント終了
-        if (currentState == GameState.Serving)
-        {
-            // レット処理
-            PrepareForServe();
-        }
-        else
-        {
-            // ポイント獲得判定
-            bool playerScored = !CheckLastHitByPlayer();
-            ChangeState(GameState.PointScored);
-        }
     }
     
     // 最後にボールを打ったのがプレイヤーかどうか
     private bool CheckLastHitByPlayer()
     {
         // この実装はボールに最後にヒットした情報を保持する必要がある
-        return currentBall.LastHitByPlayer;
+        return currentBall != null && currentBall.LastHitByPlayer;
     }
     
     // ポイント獲得処理
@@ -560,7 +400,10 @@ public class GameManager : MonoBehaviour
         matchManager.UpdateScore(playerScored);
         
         // UIスコア表示の更新
-        uiManager.UpdateScoreDisplay(matchManager.GetCurrentScore());
+        if (uiManager != null)
+        {
+            uiManager.UpdateScoreDisplay(matchManager.GetCurrentScore());
+        }
         
         // サービング情報の更新
         UpdateServeInfo();
@@ -596,7 +439,10 @@ public class GameManager : MonoBehaviour
         bool playerWon = matchManager.IsPlayerWinner();
         
         // 結果UIの表示
-        uiManager.ShowMatchResults(playerWon, matchManager.GetFinalScore());
+        if (uiManager != null)
+        {
+            uiManager.ShowMatchResults(playerWon, matchManager.GetFinalScore());
+        }
         
         // クリーンアップ
         if (currentBall != null)
@@ -606,11 +452,16 @@ public class GameManager : MonoBehaviour
         }
         
         // プレイヤーとAIを初期状態に戻す
-        playerController.ResetPlayer();
-        aiController.ResetAI();
+        if (playerController != null) playerController.ResetPlayer();
+        if (aiController != null) aiController.ResetAI();
         
         // カメラをメインメニュー表示に戻す
-        cameraManager.SwitchCameraMode(CameraManager.CameraMode.MenuView);
+        if (cameraManager != null)
+        {
+            cameraManager.SwitchCameraMode(CameraManager.CameraMode.MenuView);
+        }
+        
+        // BGMの変更などその他の終了処理
     }
     
     // ゲームを一時停止/再開
@@ -619,12 +470,12 @@ public class GameManager : MonoBehaviour
         if (Time.timeScale > 0)
         {
             Time.timeScale = 0;
-            uiManager.ShowPauseMenu();
+            if (uiManager != null) uiManager.ShowPauseMenu();
         }
         else
         {
             Time.timeScale = 1;
-            uiManager.HidePauseMenu();
+            if (uiManager != null) uiManager.HidePauseMenu();
         }
     }
     
@@ -649,10 +500,114 @@ public class GameManager : MonoBehaviour
         ChangeState(GameState.MainMenu);
     }
     
+    // 再スタート
+    public void RestartMatch()
+    {
+        // 現在のマッチをリセット
+        if (currentBall != null)
+        {
+            Destroy(currentBall.gameObject);
+            currentBall = null;
+        }
+        
+        // プレイヤーとAIをリセット
+        if (playerController != null) playerController.ResetPlayer();
+        if (aiController != null) aiController.ResetAI();
+        
+        // 新しいマッチを開始
+        StartNewMatch(true, courtType);
+    }
+    
+    // コートタイプの変更
+    public void SetCourtType(TennisBall.CourtType newCourtType)
+    {
+        courtType = newCourtType;
+        
+        // 現在のボールのコートタイプも更新
+        if (currentBall != null)
+        {
+            currentBall.SetCourtType(courtType);
+        }
+    }
+    
+    // ゲームの状態を取得
+    public GameState GetCurrentState()
+    {
+        return currentState;
+    }
+    
     // 遅延して状態を変更するためのコルーチン
     private IEnumerator DelayedStateChange(GameState newState, float delay)
     {
         yield return new WaitForSeconds(delay);
         ChangeState(newState);
+    }
+    
+    // 全シーン/オブジェクトのリセット
+    public void FullReset()
+    {
+        StopAllCoroutines();
+        
+        // 時間スケールをリセット
+        Time.timeScale = 1;
+        
+        // ボールを削除
+        if (currentBall != null)
+        {
+            Destroy(currentBall.gameObject);
+            currentBall = null;
+        }
+        
+        // プレイヤーとAIをリセット
+        if (playerController != null) playerController.ResetPlayer();
+        if (aiController != null) aiController.ResetAI();
+        
+        // マッチ情報をリセット
+        if (matchManager != null) matchManager.ResetMatch();
+        
+        // メインメニューに戻る
+        ReturnToMainMenu();
+    }
+    
+    // シーン切り替え
+    public void LoadScene(string sceneName)
+    {
+        // 時間スケールをリセット
+        Time.timeScale = 1;
+        
+        // 非同期シーンロード
+        StartCoroutine(LoadSceneAsync(sceneName));
+    }
+    
+    private IEnumerator LoadSceneAsync(string sceneName)
+    {
+        // ローディング画面表示
+        if (uiManager != null) uiManager.ShowLoading();
+        
+        // シーンのロード
+        AsyncOperation operation = SceneManager.LoadSceneAsync(sceneName);
+        
+        while (!operation.isDone)
+        {
+            float progress = Mathf.Clamp01(operation.progress / 0.9f);
+            
+            // ローディング進捗の更新
+            if (uiManager != null) uiManager.UpdateLoadingProgress(progress);
+            
+            yield return null;
+        }
+        
+        // ローディング画面非表示
+        if (uiManager != null) uiManager.HideLoading();
+    }
+    
+    // アプリケーション終了
+    public void QuitGame()
+    {
+    #if UNITY_EDITOR
+        UnityEditor.EditorApplication.isPlaying = false;
+    #else
+        Application.Quit();
+    #endif
     }
 }
